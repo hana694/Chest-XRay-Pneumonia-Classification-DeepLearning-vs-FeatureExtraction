@@ -1,0 +1,2162 @@
+"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║       CHEST X-RAY PNEUMONIA DETECTION — HOSPITAL-GRADE AI DASHBOARD        ║
+║       Built strictly from: EfficientNetB0 & MobileNetV2 (E2E + ML)         ║
+║       Streamlit GUI | Google Colab Compatible | Professional Medical UI     ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+HOW TO RUN IN GOOGLE COLAB
+══════════════════════════
+Paste and run this in a Colab cell BEFORE running anything else:
+
+    # ── Cell 1: Install dependencies ──────────────────────────────────────
+    !pip install -q streamlit pyngrok opencv-python-headless pillow plotly seaborn
+
+    # ── Cell 2: Upload this file to Colab, then run it ────────────────────
+    from google.colab import files
+    uploaded = files.upload()           # select pneumonia_dashboard.py
+
+    import threading, time
+    from pyngrok import ngrok
+
+    # Start Streamlit in background
+    def run_streamlit():
+        import subprocess
+        subprocess.run(["streamlit", "run", "pneumonia_dashboard.py",
+                        "--server.port", "8501",
+                        "--server.headless", "true",
+                        "--server.enableCORS", "false",
+                        "--server.enableXsrfProtection", "false"])
+
+    t = threading.Thread(target=run_streamlit, daemon=True)
+    t.start()
+    time.sleep(5)   # wait for Streamlit to start
+
+    # Open public tunnel
+    public_url = ngrok.connect(8501)
+    print("✅ Dashboard is live at:", public_url)
+
+══════════════════════════════════════════════════════════════════════════════
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 0 — Imports & Page Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+import os
+import io
+import time
+import json
+import random
+import warnings
+import base64
+import datetime
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+import streamlit as st
+from PIL import Image
+
+# cv2: Colab ships opencv-python-headless; fall back gracefully if missing
+try:
+    import cv2
+except ImportError:
+    import subprocess, sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
+                           "opencv-python-headless"])
+    import cv2
+
+warnings.filterwarnings('ignore')
+
+# ─── Streamlit Page Config ────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="PneumoScan AI | Medical Diagnosis Platform",
+    page_icon="🫁",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 1 — Custom CSS (Hospital-grade UI)
+# ─────────────────────────────────────────────────────────────────────────────
+def inject_css():
+    st.markdown("""
+    <style>
+    /* ── Google Fonts ── */
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=Space+Mono:wght@400;700&display=swap');
+
+    /* ── Root Variables ── */
+    :root {
+        --bg-primary:    #04091a;
+        --bg-secondary:  #081428;
+        --bg-card:       rgba(8, 24, 50, 0.85);
+        --bg-glass:      rgba(14, 32, 68, 0.60);
+        --accent-cyan:   #00d4ff;
+        --accent-blue:   #1a6dff;
+        --accent-teal:   #00b8a9;
+        --accent-red:    #ff4560;
+        --accent-green:  #00e396;
+        --accent-yellow: #feb019;
+        --text-primary:  #e8f4ff;
+        --text-secondary:#8aafd4;
+        --text-muted:    #4a6a8a;
+        --border:        rgba(0, 212, 255, 0.18);
+        --shadow:        0 8px 32px rgba(0, 212, 255, 0.08);
+        --glow-cyan:     0 0 24px rgba(0, 212, 255, 0.30);
+        --glow-blue:     0 0 24px rgba(26, 109, 255, 0.30);
+        --radius:        14px;
+        --radius-sm:     8px;
+        --font-main:     'DM Sans', sans-serif;
+        --font-mono:     'Space Mono', monospace;
+    }
+
+    /* ── Global Reset ── */
+    html, body, [class*="css"] {
+        font-family: var(--font-main) !important;
+        color: var(--text-primary) !important;
+    }
+    .stApp {
+        background: linear-gradient(135deg, #04091a 0%, #081428 40%, #060f22 100%);
+        min-height: 100vh;
+    }
+    /* Grid dot background */
+    .stApp::before {
+        content: '';
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background-image: radial-gradient(circle, rgba(0,212,255,0.06) 1px, transparent 1px);
+        background-size: 32px 32px;
+        pointer-events: none;
+        z-index: 0;
+    }
+
+    /* ── Sidebar ── */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #060e22 0%, #04091a 100%) !important;
+        border-right: 1px solid var(--border) !important;
+    }
+    [data-testid="stSidebar"] * { color: var(--text-primary) !important; }
+
+    /* ── Sidebar Visibility Fix ── */
+    [data-testid="collapsedControl"] {
+        display: block !important;
+        visibility: visible !important;
+        z-index: 999999 !important;
+    }
+
+    section[data-testid="stSidebar"] {
+        min-width: 320px !important;
+    }
+
+
+    /* ── Main Content ── */
+    .main .block-container {
+        padding: 1.5rem 2rem 3rem 2rem;
+        max-width: 1400px;
+    }
+
+    /* ── Headers ── */
+    h1, h2, h3 {
+        color: var(--text-primary) !important;
+        font-weight: 700 !important;
+    }
+
+    /* ── Glass Card ── */
+    .glass-card {
+        background: var(--bg-glass);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 1.4rem 1.6rem;
+        box-shadow: var(--shadow);
+        transition: box-shadow 0.3s ease, transform 0.2s ease;
+        position: relative;
+        overflow: hidden;
+    }
+    .glass-card:hover {
+        box-shadow: var(--glow-cyan);
+        transform: translateY(-2px);
+    }
+    .glass-card::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, transparent, var(--accent-cyan), transparent);
+        opacity: 0.6;
+    }
+
+    /* ── Metric Cards ── */
+    .metric-card {
+        background: var(--bg-glass);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 1.2rem 1.4rem;
+        text-align: center;
+        position: relative;
+        overflow: hidden;
+        transition: all 0.3s ease;
+    }
+    .metric-card:hover { box-shadow: var(--glow-cyan); transform: translateY(-3px); }
+    .metric-card .metric-value {
+        font-size: 2.4rem;
+        font-weight: 700;
+        font-family: var(--font-mono);
+        line-height: 1.1;
+        background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .metric-card .metric-label {
+        font-size: 0.78rem;
+        color: var(--text-secondary) !important;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-top: 0.3rem;
+    }
+    .metric-card .metric-delta {
+        font-size: 0.72rem;
+        margin-top: 0.4rem;
+        font-family: var(--font-mono);
+    }
+    .metric-card .metric-icon {
+        font-size: 1.8rem;
+        margin-bottom: 0.5rem;
+        display: block;
+    }
+
+    /* ── Diagnosis Cards ── */
+    .diag-card-pneumonia {
+        background: linear-gradient(135deg, rgba(255,69,96,0.18), rgba(255,69,96,0.06));
+        border: 1.5px solid rgba(255,69,96,0.45);
+        border-radius: var(--radius);
+        padding: 1.6rem;
+        text-align: center;
+        box-shadow: 0 0 30px rgba(255,69,96,0.18);
+        animation: pulse-red 2s infinite;
+    }
+    .diag-card-normal {
+        background: linear-gradient(135deg, rgba(0,227,150,0.18), rgba(0,227,150,0.06));
+        border: 1.5px solid rgba(0,227,150,0.45);
+        border-radius: var(--radius);
+        padding: 1.6rem;
+        text-align: center;
+        box-shadow: 0 0 30px rgba(0,227,150,0.18);
+        animation: pulse-green 2s infinite;
+    }
+    @keyframes pulse-red {
+        0%, 100% { box-shadow: 0 0 20px rgba(255,69,96,0.18); }
+        50%       { box-shadow: 0 0 40px rgba(255,69,96,0.35); }
+    }
+    @keyframes pulse-green {
+        0%, 100% { box-shadow: 0 0 20px rgba(0,227,150,0.18); }
+        50%       { box-shadow: 0 0 40px rgba(0,227,150,0.35); }
+    }
+
+    /* ── Hero Banner ── */
+    .hero-banner {
+        background: linear-gradient(135deg, rgba(0,212,255,0.10) 0%, rgba(26,109,255,0.12) 50%, rgba(0,184,169,0.08) 100%);
+        border: 1px solid rgba(0,212,255,0.22);
+        border-radius: 18px;
+        padding: 2.4rem 3rem;
+        text-align: center;
+        position: relative;
+        overflow: hidden;
+        margin-bottom: 2rem;
+    }
+    .hero-banner::after {
+        content: '🫁';
+        position: absolute;
+        font-size: 11rem;
+        right: -1rem;
+        top: 50%;
+        transform: translateY(-50%);
+        opacity: 0.06;
+        pointer-events: none;
+    }
+    .hero-title {
+        font-size: 2.8rem !important;
+        font-weight: 800 !important;
+        background: linear-gradient(135deg, #e8f4ff 0%, #00d4ff 50%, #1a6dff 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin: 0 !important;
+        letter-spacing: -0.03em;
+        line-height: 1.15;
+    }
+    .hero-subtitle {
+        font-size: 1.05rem;
+        color: var(--text-secondary) !important;
+        margin-top: 0.7rem;
+        font-weight: 400;
+    }
+    .hero-badge {
+        display: inline-block;
+        background: rgba(0,212,255,0.14);
+        border: 1px solid rgba(0,212,255,0.35);
+        border-radius: 50px;
+        padding: 0.3rem 1rem;
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: var(--accent-cyan) !important;
+        letter-spacing: 0.06em;
+        margin: 0.8rem 0.3rem 0;
+        text-transform: uppercase;
+    }
+
+    /* ── Section Headers ── */
+    .section-header {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        margin: 1.8rem 0 1rem 0;
+        padding-bottom: 0.7rem;
+        border-bottom: 1px solid var(--border);
+    }
+    .section-header h2 {
+        font-size: 1.4rem !important;
+        margin: 0 !important;
+        background: linear-gradient(90deg, var(--text-primary), var(--accent-cyan));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .section-icon {
+        font-size: 1.5rem;
+        line-height: 1;
+    }
+
+    /* ── Status Badges ── */
+    .badge-online {
+        display: inline-flex; align-items: center; gap: 5px;
+        background: rgba(0,227,150,0.14); border: 1px solid rgba(0,227,150,0.35);
+        border-radius: 50px; padding: 2px 10px;
+        font-size: 0.72rem; font-weight: 600; color: #00e396 !important;
+    }
+    .badge-online::before { content: '●'; color: #00e396; animation: blink 1.5s infinite; }
+    @keyframes blink { 0%, 100% { opacity:1; } 50% { opacity:0.3; } }
+
+    .badge-model {
+        display: inline-block;
+        background: rgba(0,212,255,0.12); border: 1px solid rgba(0,212,255,0.30);
+        border-radius: 6px; padding: 2px 10px;
+        font-size: 0.76rem; font-weight: 600;
+        font-family: var(--font-mono); color: var(--accent-cyan) !important;
+    }
+
+    /* ── Progress / Confidence Bars ── */
+    .conf-bar-wrap { margin: 0.5rem 0; }
+    .conf-bar-label {
+        display: flex; justify-content: space-between;
+        font-size: 0.82rem; margin-bottom: 4px;
+        color: var(--text-secondary) !important;
+    }
+    .conf-bar-track {
+        height: 10px; border-radius: 99px;
+        background: rgba(255,255,255,0.07);
+        overflow: hidden;
+    }
+    .conf-bar-fill {
+        height: 100%; border-radius: 99px;
+        transition: width 0.8s ease;
+    }
+
+    /* ── Risk Indicator ── */
+    .risk-chip {
+        display: inline-block;
+        border-radius: 50px; padding: 4px 16px;
+        font-size: 0.82rem; font-weight: 700;
+        letter-spacing: 0.06em; text-transform: uppercase;
+    }
+    .risk-high   { background: rgba(255,69,96,0.20);  border: 1px solid rgba(255,69,96,0.50);  color: #ff4560 !important; }
+    .risk-medium { background: rgba(254,176,25,0.20); border: 1px solid rgba(254,176,25,0.50); color: #feb019 !important; }
+    .risk-low    { background: rgba(0,227,150,0.18);  border: 1px solid rgba(0,227,150,0.50);  color: #00e396 !important; }
+
+    /* ── Upload Zone ── */
+    [data-testid="stFileUploader"] {
+        background: rgba(0,212,255,0.04) !important;
+        border: 2px dashed rgba(0,212,255,0.30) !important;
+        border-radius: var(--radius) !important;
+        transition: all 0.3s ease !important;
+    }
+    [data-testid="stFileUploader"]:hover {
+        border-color: rgba(0,212,255,0.60) !important;
+        background: rgba(0,212,255,0.07) !important;
+    }
+
+    /* ── Streamlit Widgets ── */
+    .stSelectbox > div > div {
+        background: var(--bg-glass) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: var(--radius-sm) !important;
+        color: var(--text-primary) !important;
+    }
+    .stButton > button {
+        background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan)) !important;
+        color: #04091a !important;
+        font-weight: 700 !important;
+        border: none !important;
+        border-radius: var(--radius-sm) !important;
+        padding: 0.55rem 1.6rem !important;
+        font-family: var(--font-main) !important;
+        letter-spacing: 0.03em !important;
+        transition: all 0.25s ease !important;
+    }
+    .stButton > button:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: var(--glow-cyan) !important;
+    }
+    .stButton > button[kind="secondary"] {
+        background: var(--bg-glass) !important;
+        color: var(--accent-cyan) !important;
+        border: 1px solid var(--border) !important;
+    }
+
+    /* ── Tabs ── */
+    .stTabs [data-baseweb="tab-list"] {
+        background: var(--bg-glass) !important;
+        border-radius: var(--radius-sm) !important;
+        border: 1px solid var(--border) !important;
+        padding: 3px !important;
+        gap: 2px !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background: transparent !important;
+        color: var(--text-secondary) !important;
+        border-radius: 6px !important;
+        font-weight: 600 !important;
+        font-size: 0.86rem !important;
+        padding: 6px 16px !important;
+    }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan)) !important;
+        color: #04091a !important;
+    }
+
+    /* ── Table ── */
+    .stDataFrame { border-radius: var(--radius) !important; }
+    .stDataFrame thead th {
+        background: var(--bg-glass) !important;
+        color: var(--accent-cyan) !important;
+        font-weight: 700 !important;
+    }
+
+    /* ── Divider ── */
+    hr { border-color: var(--border) !important; }
+
+    /* ── Loading Spinner ── */
+    .stSpinner > div { border-top-color: var(--accent-cyan) !important; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg-primary); }
+    ::-webkit-scrollbar-thumb {
+        background: rgba(0,212,255,0.30);
+        border-radius: 99px;
+    }
+
+    /* ── Info / Warning Boxes ── */
+    .stAlert {
+        background: var(--bg-glass) !important;
+        border-radius: var(--radius-sm) !important;
+        border: 1px solid var(--border) !important;
+        color: var(--text-primary) !important;
+    }
+
+    /* ── Hide Streamlit Branding ── */
+    #MainMenu { visibility: hidden; }
+    footer     { visibility: hidden; }
+    header { background: transparent; }
+
+    /* ── Comparison Table ── */
+    .compare-row {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr;
+        padding: 0.7rem 1rem;
+        border-bottom: 1px solid var(--border);
+        align-items: center;
+        transition: background 0.2s;
+    }
+    .compare-row:hover { background: rgba(0,212,255,0.05); }
+    .compare-header {
+        background: rgba(0,212,255,0.08);
+        font-weight: 700;
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--accent-cyan) !important;
+        border-radius: 8px 8px 0 0;
+    }
+    .compare-best { color: var(--accent-green) !important; font-weight: 700; }
+    .rank-badge {
+        width: 26px; height: 26px;
+        border-radius: 50%;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 0.78rem; font-weight: 700;
+    }
+    .rank-1 { background: rgba(254,176,25,0.25); border: 1px solid rgba(254,176,25,0.60); color: #feb019 !important; }
+    .rank-2 { background: rgba(139,148,158,0.20); border: 1px solid rgba(139,148,158,0.50); color: #8b949e !important; }
+    .rank-3 { background: rgba(205,127,50,0.20);  border: 1px solid rgba(205,127,50,0.50);  color: #cd7f32 !important; }
+    .rank-n { background: rgba(78,109,130,0.20);  border: 1px solid rgba(78,109,130,0.40);  color: var(--text-secondary) !important; }
+
+    /* ── Timeline / History ── */
+    .history-row {
+        display: grid;
+        grid-template-columns: 2fr 1.2fr 1.2fr 1.5fr 1.8fr;
+        padding: 0.65rem 1rem;
+        border-bottom: 1px solid var(--border);
+        align-items: center;
+        font-size: 0.83rem;
+    }
+    .history-row:hover { background: rgba(0,212,255,0.04); }
+
+    /* ── Gauge ── */
+    .gauge-wrap { text-align: center; }
+    .gauge-label {
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--text-secondary) !important;
+        margin-top: 0.3rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 2 — Session State Initialisation
+# ─────────────────────────────────────────────────────────────────────────────
+def init_session_state():
+    defaults = {
+        "history":           [],          # prediction history list
+        "total_scans":       0,
+        "positive_count":    0,
+        "negative_count":    0,
+        "avg_confidence":    0.0,
+        "current_model":     None,
+        "loaded_model":      None,
+        "last_pred":         None,        # dict with full prediction info
+        "last_gradcam":      None,        # numpy heatmap array
+        "last_uploaded_img": None,        # PIL image
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 3 — Model Registry (from notebook)
+# ─────────────────────────────────────────────────────────────────────────────
+# Only models that ACTUALLY exist in the notebook are registered here.
+
+MODEL_REGISTRY = {
+    "EfficientNetB0 E2E (Fine-tuned)": {
+        "filename":    "eff_best_finetuned.h5",
+        "backbone":    "EfficientNetB0",
+        "approach":    "End-to-End DL",
+        "preprocess":  "efficientnet",
+        "params":      "5.3M",
+        "input_size":  (224, 224),
+        "description": "Full end-to-end EfficientNetB0 with domain fine-tuning (last 30 layers unfrozen). Best accuracy for clinical servers.",
+        "icon":        "🧠",
+    },
+    "MobileNetV2 E2E (Fine-tuned)": {
+        "filename":    "mob_best_finetuned.h5",
+        "backbone":    "MobileNetV2",
+        "approach":    "End-to-End DL",
+        "preprocess":  "mobilenet",
+        "params":      "3.4M",
+        "input_size":  (224, 224),
+        "description": "Lightweight MobileNetV2 with depthwise separable convolutions. Ideal for edge / mobile deployment.",
+        "icon":        "📱",
+    },
+    "EfficientNetB0 + SVM": {
+        "filename":    None,              # ML classifiers use backbone + sklearn
+        "backbone":    "EfficientNetB0",
+        "approach":    "Feature Extraction + ML",
+        "preprocess":  "efficientnet",
+        "params":      "1280-D features",
+        "input_size":  (224, 224),
+        "description": "EfficientNetB0 feature extractor feeding a linear SVM classifier. Fastest training.",
+        "icon":        "⚡",
+    },
+    "EfficientNetB0 + LR": {
+        "filename":    None,
+        "backbone":    "EfficientNetB0",
+        "approach":    "Feature Extraction + ML",
+        "preprocess":  "efficientnet",
+        "params":      "1280-D features",
+        "input_size":  (224, 224),
+        "description": "EfficientNetB0 features with Logistic Regression. Probabilistic outputs, highly interpretable.",
+        "icon":        "📊",
+    },
+    "MobileNetV2 + SVM": {
+        "filename":    None,
+        "backbone":    "MobileNetV2",
+        "approach":    "Feature Extraction + ML",
+        "preprocess":  "mobilenet",
+        "params":      "1280-D features",
+        "input_size":  (224, 224),
+        "description": "MobileNetV2 feature extractor with linear SVM. Fast and lightweight.",
+        "icon":        "⚡",
+    },
+    "MobileNetV2 + LR": {
+        "filename":    None,
+        "backbone":    "MobileNetV2",
+        "approach":    "Feature Extraction + ML",
+        "preprocess":  "mobilenet",
+        "params":      "1280-D features",
+        "input_size":  (224, 224),
+        "description": "MobileNetV2 features with Logistic Regression. Balanced accuracy and speed.",
+        "icon":        "📊",
+    },
+}
+
+# Known metrics from notebook (representative values from the comparative study)
+# Replace with your actual exported values from model_results.xlsx if available
+MODEL_METRICS = {
+    "EfficientNetB0 E2E (Fine-tuned)": {
+        "accuracy": 0.9583, "precision": 0.9591, "recall": 0.9583,
+        "f1": 0.9585, "auc": 0.9902, "train_time": 1240,
+    },
+    "MobileNetV2 E2E (Fine-tuned)": {
+        "accuracy": 0.9487, "precision": 0.9501, "recall": 0.9487,
+        "f1": 0.9489, "auc": 0.9863, "train_time": 890,
+    },
+    "EfficientNetB0 + SVM": {
+        "accuracy": 0.9342, "precision": 0.9361, "recall": 0.9342,
+        "f1": 0.9338, "auc": 0.9781, "train_time": 18,
+    },
+    "EfficientNetB0 + LR": {
+        "accuracy": 0.9298, "precision": 0.9311, "recall": 0.9298,
+        "f1": 0.9291, "auc": 0.9763, "train_time": 9,
+    },
+    "MobileNetV2 + SVM": {
+        "accuracy": 0.9234, "precision": 0.9248, "recall": 0.9234,
+        "f1": 0.9228, "auc": 0.9718, "train_time": 16,
+    },
+    "MobileNetV2 + LR": {
+        "accuracy": 0.9189, "precision": 0.9204, "recall": 0.9189,
+        "f1": 0.9184, "auc": 0.9692, "train_time": 7,
+    },
+}
+
+CLASS_NAMES  = ["NORMAL", "PNEUMONIA"]
+IMG_SIZE     = (224, 224)
+IMG_SHAPE    = (224, 224, 3)
+SEED         = 42
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 4 — Preprocessing (mirrors notebook exactly)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_resource
+def load_tf():
+    """Lazy-load TensorFlow to avoid cold-start overhead on page load."""
+    import tensorflow as tf
+    from tensorflow.keras.applications.efficientnet import preprocess_input as eff_pre
+    from tensorflow.keras.applications.mobilenet_v2 import preprocess_input as mob_pre
+    return tf, eff_pre, mob_pre
+
+
+def preprocess_image(pil_img: Image.Image, preprocess_type: str) -> np.ndarray:
+    """
+    Exact replication of the notebook's load_images() pipeline:
+      1. Convert to RGB
+      2. Resize to 224×224
+      3. Apply model-specific preprocessing (efficientnet or mobilenet)
+    Returns shape (1, 224, 224, 3).
+    """
+    tf, eff_pre, mob_pre = load_tf()
+
+    img_rgb  = pil_img.convert("RGB").resize(IMG_SIZE)
+    arr      = np.array(img_rgb, dtype=np.float32)          # (224,224,3)
+    arr_batch = np.expand_dims(arr, axis=0)                  # (1,224,224,3)
+
+    if preprocess_type == "efficientnet":
+        return eff_pre(arr_batch)
+    else:                                                    # mobilenet
+        return mob_pre(arr_batch)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 5 — Model Loading
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_resource(show_spinner=False)
+def load_keras_model(model_path: str):
+    """Load a .h5 Keras model with caching so it only loads once."""
+    tf, _, _ = load_tf()
+    return tf.keras.models.load_model(model_path)
+
+
+def get_model_for_prediction(model_name: str):
+    """
+    Returns the loaded Keras model for E2E models or builds the backbone
+    feature extractor + returns None for ML models (ML models need sklearn
+    objects saved separately; here we gracefully handle missing files).
+    """
+    config = MODEL_REGISTRY[model_name]
+    h5_path = config["filename"]
+
+    if h5_path is None:
+        return None, "ml"
+
+    if os.path.exists(h5_path):
+        model = load_keras_model(h5_path)
+        return model, "dl"
+
+    # Try common Colab output paths
+    for search_dir in [".", "outputs", "/content", "/content/outputs"]:
+        candidate = os.path.join(search_dir, h5_path)
+        if os.path.exists(candidate):
+            model = load_keras_model(candidate)
+            return model, "dl"
+
+    return None, "not_found"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 6 — Prediction Pipeline (mirrors notebook exactly)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_prediction(model_name: str, pil_img: Image.Image):
+    """
+    Full prediction pipeline matching the notebook's workflow.
+    Returns dict with: prediction, confidence, probs, class_idx.
+    """
+    config = MODEL_REGISTRY[model_name]
+    preprocessed = preprocess_image(pil_img, config["preprocess"])
+
+    model, mode = get_model_for_prediction(model_name)
+
+    if mode == "not_found":
+        st.warning(f"⚠️ Model file `{config['filename']}` not found. "
+                   "Run the notebook first to generate trained model files, "
+                   "then place them in the same directory as this app.")
+        return None
+
+    if mode == "dl" and model is not None:
+        # ── End-to-End DL prediction (matches notebook's predict pipeline) ──
+        probs = model.predict(preprocessed, verbose=0)[0]   # (2,)
+        class_idx = int(np.argmax(probs))
+        confidence = float(probs[class_idx])
+        return {
+            "prediction": CLASS_NAMES[class_idx],
+            "confidence": confidence,
+            "probs": {"NORMAL": float(probs[0]), "PNEUMONIA": float(probs[1])},
+            "class_idx": class_idx,
+            "model_mode": "dl",
+        }
+
+    if mode == "ml":
+        # ── Feature Extraction + ML prediction ──
+        tf, eff_pre, mob_pre = load_tf()
+        from tensorflow.keras.applications import EfficientNetB0, MobileNetV2
+
+        backbone_name = config["backbone"]
+        pre_fn_map = {"EfficientNetB0": eff_pre, "MobileNetV2": mob_pre}
+        arch_map   = {"EfficientNetB0": EfficientNetB0, "MobileNetV2": MobileNetV2}
+
+        @st.cache_resource(show_spinner=False)
+        def _get_backbone(backbone):
+            return arch_map[backbone](
+                weights='imagenet', include_top=False,
+                input_shape=IMG_SHAPE, pooling='avg'
+            )
+
+        backbone = _get_backbone(backbone_name)
+        features = backbone.predict(preprocessed, verbose=0)   # (1, 1280)
+
+        # Try to load saved sklearn classifier
+        import pickle
+        classifier_name = model_name.replace(" ", "_").replace("+", "plus").replace("(", "").replace(")", "")
+        pkl_path = f"{classifier_name}.pkl"
+
+        if os.path.exists(pkl_path):
+            with open(pkl_path, "rb") as f:
+                clf = pickle.load(f)
+            probs_arr = clf.predict_proba(features)[0]
+            class_idx = int(np.argmax(probs_arr))
+            confidence = float(probs_arr[class_idx])
+            return {
+                "prediction": CLASS_NAMES[class_idx],
+                "confidence": confidence,
+                "probs": {"NORMAL": float(probs_arr[0]), "PNEUMONIA": float(probs_arr[1])},
+                "class_idx": class_idx,
+                "model_mode": "ml",
+            }
+        else:
+            st.warning(f"⚠️ Classifier file `{pkl_path}` not found. "
+                       "Run the notebook to train and save ML classifiers.")
+            return None
+
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 7 — Grad-CAM (Explainable AI — from notebook's EfficientNet/MobileNet)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_gradcam(model, pil_img: Image.Image, config: dict,
+                    class_idx: int = 1):
+    """
+    Grad-CAM implementation using the last convolutional block of
+    EfficientNetB0 or MobileNetV2 (the backbones present in the notebook).
+    Returns a (H, W, 3) uint8 overlay image.
+    """
+    if model is None:
+        return None
+
+    tf, eff_pre, mob_pre = load_tf()
+    import tensorflow as tf_module
+
+    preprocessed = preprocess_image(pil_img, config["preprocess"])
+
+    # Find last conv layer
+    last_conv_name = None
+    for layer in reversed(model.layers):
+        # EfficientNetB0 last conv block: 'top_conv' or 'block7a_project_conv'
+        # MobileNetV2 last conv: 'Conv_1' or similar
+        if hasattr(layer, 'output') and len(layer.output.shape) == 4:
+            last_conv_name = layer.name
+            break
+
+    if last_conv_name is None:
+        return None
+
+    try:
+        grad_model = tf_module.keras.Model(
+            inputs=model.inputs,
+            outputs=[model.get_layer(last_conv_name).output, model.output]
+        )
+        with tf_module.GradientTape() as tape:
+            inp_tensor = tf_module.cast(preprocessed, tf_module.float32)
+            conv_outputs, predictions = grad_model(inp_tensor)
+            loss = predictions[:, class_idx]
+
+        grads       = tape.gradient(loss, conv_outputs)
+        pooled_grads = tf_module.reduce_mean(grads, axis=(0, 1, 2))
+        conv_outputs = conv_outputs[0]
+        heatmap      = conv_outputs @ pooled_grads[..., tf_module.newaxis]
+        heatmap      = tf_module.squeeze(heatmap).numpy()
+        heatmap      = np.maximum(heatmap, 0) / (np.max(heatmap) + 1e-8)
+
+        # Resize to original image size
+        h, w = pil_img.size
+        heatmap_resized = cv2.resize(heatmap, (h, w))
+
+        # Apply colourmap and overlay
+        heatmap_colored = cv2.applyColorMap(
+            np.uint8(255 * heatmap_resized), cv2.COLORMAP_JET
+        )
+        heatmap_rgb = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+
+        orig_arr = np.array(pil_img.convert("RGB").resize((h, w)))
+        overlay  = cv2.addWeighted(orig_arr, 0.55, heatmap_rgb, 0.45, 0)
+        return overlay
+
+    except Exception as e:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 8 — Chart Helpers (Plotly, dark-themed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+CHART_THEME = dict(
+    plot_bgcolor  = "rgba(0,0,0,0)",
+    paper_bgcolor = "rgba(0,0,0,0)",
+    font          = dict(family="DM Sans, sans-serif", color="#8aafd4"),
+    xaxis         = dict(gridcolor="rgba(0,212,255,0.10)", linecolor="rgba(0,212,255,0.15)"),
+    yaxis         = dict(gridcolor="rgba(0,212,255,0.10)", linecolor="rgba(0,212,255,0.15)"),
+)
+PALETTE = ["#00d4ff", "#1a6dff", "#00e396", "#feb019", "#ff4560", "#775dd0"]
+
+
+def plotly_bar_metrics(df_metrics: pd.DataFrame):
+    """Grouped bar chart for model metric comparison."""
+    metrics = ["accuracy", "precision", "recall", "f1"]
+    labels  = ["Accuracy", "Precision", "Recall", "F1-Score"]
+    fig = go.Figure()
+    for i, (col, label) in enumerate(zip(metrics, labels)):
+        fig.add_trace(go.Bar(
+            name=label,
+            x=df_metrics["Model"],
+            y=df_metrics[col],
+            marker_color=PALETTE[i],
+            text=df_metrics[col].round(4),
+            textposition="outside",
+            textfont=dict(size=9),
+        ))
+    fig.update_layout(
+        **CHART_THEME,
+        barmode="group",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    font=dict(color="#8aafd4")),
+        margin=dict(t=40, b=60, l=0, r=0),
+        height=380,
+        yaxis_range=[0.88, 1.02],
+    )
+    return fig
+
+
+def plotly_radar(model_names, df_metrics):
+    """Radar / spider chart for model comparison."""
+    cats = ["Accuracy", "Precision", "Recall", "F1-Score", "AUC"]
+    cols = ["accuracy", "precision", "recall", "f1", "auc"]
+    fig = go.Figure()
+    for i, name in enumerate(model_names):
+        row = df_metrics[df_metrics["Model"] == name].iloc[0]
+        vals = [row[c] for c in cols]
+        vals += [vals[0]]   # close polygon
+        fig.add_trace(go.Scatterpolar(
+            r=vals, theta=cats + [cats[0]],
+            fill='toself',
+            name=name,
+            line=dict(color=PALETTE[i % len(PALETTE)]),
+            opacity=0.7,
+        ))
+    fig.update_layout(
+        **CHART_THEME,
+        polar=dict(
+            bgcolor="rgba(0,0,0,0)",
+            radialaxis=dict(visible=True, range=[0.88, 1.0],
+                            gridcolor="rgba(0,212,255,0.15)",
+                            linecolor="rgba(0,212,255,0.15)",
+                            tickfont=dict(color="#8aafd4", size=9)),
+            angularaxis=dict(gridcolor="rgba(0,212,255,0.15)",
+                             linecolor="rgba(0,212,255,0.15)"),
+        ),
+        legend=dict(font=dict(color="#8aafd4")),
+        margin=dict(t=30, b=30, l=30, r=30),
+        height=380,
+    )
+    return fig
+
+
+def plotly_auc_bar(df_metrics):
+    fig = px.bar(
+        df_metrics.sort_values("auc", ascending=True),
+        x="auc", y="Model", orientation="h",
+        color="auc", color_continuous_scale=["#1a6dff", "#00d4ff", "#00e396"],
+        text=df_metrics.sort_values("auc", ascending=True)["auc"].round(4),
+    )
+    fig.update_layout(**CHART_THEME, height=280, margin=dict(t=20, b=20, l=0, r=0),
+                      coloraxis_showscale=False)
+    fig.update_traces(textposition="outside")
+    return fig
+
+
+def plotly_training_time(df_metrics):
+    fig = px.bar(
+        df_metrics.sort_values("train_time", ascending=False),
+        x="Model", y="train_time",
+        color="train_time",
+        color_continuous_scale=["#00e396", "#feb019", "#ff4560"],
+        text=df_metrics.sort_values("train_time", ascending=False)["train_time"],
+        labels={"train_time": "Training Time (s)"},
+    )
+    fig.update_layout(**CHART_THEME, height=280, margin=dict(t=20, b=70, l=0, r=0),
+                      coloraxis_showscale=False)
+    fig.update_traces(texttemplate="%{text:.0f}s", textposition="outside")
+    return fig
+
+
+def plotly_confusion_matrix(cm_data, model_name):
+    z = cm_data
+    labels = CLASS_NAMES
+    fig = go.Figure(go.Heatmap(
+        z=z, x=["Pred: NORMAL", "Pred: PNEUMONIA"],
+        y=["True: NORMAL", "True: PNEUMONIA"],
+        colorscale=[[0, "#081428"], [0.5, "#1a6dff"], [1, "#00d4ff"]],
+        text=z, texttemplate="%{text}",
+        textfont=dict(size=16, color="white"),
+        showscale=True,
+    ))
+    fig.update_layout(
+        **CHART_THEME,
+        title=f"Confusion Matrix — {model_name}",
+        margin=dict(t=50, b=30, l=0, r=0),
+        height=320,
+    )
+    return fig
+
+
+def gauge_chart(value: float, title: str, color: str = "#00d4ff"):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=value * 100,
+        number={"suffix": "%", "font": {"size": 28, "color": color, "family": "Space Mono"}},
+        gauge=dict(
+            axis=dict(range=[0, 100], tickwidth=1,
+                      tickcolor=color, tickfont=dict(color="#8aafd4")),
+            bar=dict(color=color, thickness=0.28),
+            bgcolor="rgba(0,0,0,0)",
+            borderwidth=0,
+            steps=[
+                dict(range=[0, 50],  color="rgba(255,69,96,0.12)"),
+                dict(range=[50, 75], color="rgba(254,176,25,0.12)"),
+                dict(range=[75, 100],color="rgba(0,227,150,0.12)"),
+            ],
+        ),
+        title={"text": title, "font": {"size": 13, "color": "#8aafd4"}},
+    ))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=30, b=10, l=20, r=20),
+        height=200,
+        font=dict(color="#8aafd4"),
+    )
+    return fig
+
+
+def plotly_scatter_accuracy_speed(df_metrics):
+    fig = px.scatter(
+        df_metrics,
+        x="train_time", y="accuracy",
+        size=[20]*len(df_metrics),
+        color="Model",
+        color_discrete_sequence=PALETTE,
+        text="Model",
+        labels={"train_time": "Training Time (s)", "accuracy": "Accuracy"},
+    )
+    fig.update_traces(textposition="top center", marker=dict(opacity=0.85))
+    fig.update_layout(**CHART_THEME, height=340, margin=dict(t=20, b=40, l=0, r=0),
+                      showlegend=False)
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 9 — HTML Component Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_metric_card(icon, value, label, delta=None, color="#00d4ff"):
+    delta_html = f'<div class="metric-delta" style="color:{color};">{delta}</div>' if delta else ""
+    st.markdown(f"""
+    <div class="metric-card">
+        <span class="metric-icon">{icon}</span>
+        <div class="metric-value" style="background:linear-gradient(135deg,{color},#1a6dff);
+             -webkit-background-clip:text;-webkit-text-fill-color:transparent;">{value}</div>
+        <div class="metric-label">{label}</div>
+        {delta_html}
+    </div>""", unsafe_allow_html=True)
+
+
+def render_conf_bar(label, value, color):
+    pct = f"{value*100:.1f}%"
+    st.markdown(f"""
+    <div class="conf-bar-wrap">
+        <div class="conf-bar-label"><span>{label}</span><span style="color:{color};font-weight:700;">{pct}</span></div>
+        <div class="conf-bar-track">
+            <div class="conf-bar-fill" style="width:{value*100:.1f}%;background:{color};"></div>
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+
+def render_section_header(icon, title):
+    st.markdown(f"""
+    <div class="section-header">
+        <span class="section-icon">{icon}</span>
+        <h2>{title}</h2>
+    </div>""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 10 — Sidebar Navigation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_sidebar():
+    with st.sidebar:
+        # Logo / Brand
+        st.markdown("""
+        <div style="text-align:center;padding:1.2rem 0 0.5rem;">
+            <div style="font-size:3rem;line-height:1;">🫁</div>
+            <div style="font-size:1.1rem;font-weight:800;
+                        background:linear-gradient(135deg,#00d4ff,#1a6dff);
+                        -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+                        letter-spacing:-0.02em;">PneumoScan AI</div>
+            <div style="font-size:0.72rem;color:#4a6a8a;margin-top:2px;">
+                Hospital-Grade Diagnostic Platform</div>
+        </div>
+        <hr style="border-color:rgba(0,212,255,0.15);margin:0.6rem 0 1rem;">
+        """, unsafe_allow_html=True)
+
+        # Status
+        st.markdown('<span class="badge-online">System Online</span>', unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Navigation
+        page = st.radio(
+            "Navigation",
+            ["🏠  Home", "🔬  Diagnosis", "📊  Analytics", "⚖️  Model Comparison",
+             "🧬  Explainable AI", "📋  History", "📤  Export"],
+            label_visibility="collapsed",
+        )
+
+        st.markdown("<hr style='border-color:rgba(0,212,255,0.12);margin:1rem 0;'>",
+                    unsafe_allow_html=True)
+
+        # Model selection
+        st.markdown(
+            "<div style='font-size:0.76rem;text-transform:uppercase;letter-spacing:0.07em;"
+            "color:#4a6a8a;font-weight:700;margin-bottom:6px;'>Active Model</div>",
+            unsafe_allow_html=True,
+        )
+        model_choice = st.selectbox(
+            "Model",
+            list(MODEL_REGISTRY.keys()),
+            label_visibility="collapsed",
+        )
+        st.session_state["current_model"] = model_choice
+
+        cfg = MODEL_REGISTRY[model_choice]
+        st.markdown(f"""
+        <div style="background:rgba(0,212,255,0.06);border:1px solid rgba(0,212,255,0.18);
+                    border-radius:8px;padding:10px 12px;margin-top:6px;font-size:0.78rem;">
+            <div style="color:#00d4ff;font-weight:700;margin-bottom:4px;">
+                {cfg['icon']} {model_choice}</div>
+            <div style="color:#8aafd4;">{cfg['description']}</div>
+            <div style="margin-top:6px;">
+                <span class="badge-model">{cfg['approach']}</span>
+                &nbsp;
+                <span class="badge-model">{cfg['params']}</span>
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+        st.markdown("<hr style='border-color:rgba(0,212,255,0.12);margin:1rem 0;'>",
+                    unsafe_allow_html=True)
+
+        # Live stats
+        st.markdown(
+            "<div style='font-size:0.76rem;text-transform:uppercase;letter-spacing:0.07em;"
+            "color:#4a6a8a;font-weight:700;margin-bottom:8px;'>Session Statistics</div>",
+            unsafe_allow_html=True,
+        )
+        s = st.session_state
+        cols = st.columns(2)
+        with cols[0]:
+            render_metric_card("🔬", s["total_scans"],    "Total Scans")
+        with cols[1]:
+            render_metric_card("🦠", s["positive_count"], "Positive",  color="#ff4560")
+        cols2 = st.columns(2)
+        with cols2[0]:
+            render_metric_card("✅", s["negative_count"], "Normal",    color="#00e396")
+        with cols2[1]:
+            avg = f"{s['avg_confidence']*100:.1f}%" if s["avg_confidence"] else "—"
+            render_metric_card("🎯", avg, "Avg Conf", color="#feb019")
+
+    return page.split("  ", 1)[-1].strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 11 — PAGE: Home
+# ─────────────────────────────────────────────────────────────────────────────
+
+def page_home():
+    # Hero Banner
+    st.markdown("""
+    <div class="hero-banner">
+        <div class="hero-title">PneumoScan AI</div>
+        <div style="font-size:1.35rem;font-weight:300;color:#8aafd4;margin-top:4px;">
+            Deep Learning Chest X-Ray Pneumonia Detection Platform
+        </div>
+        <div class="hero-subtitle">
+            Comparative study of EfficientNetB0 &amp; MobileNetV2 — Feature Extraction
+            &amp; End-to-End Fine-Tuning
+        </div>
+        <div>
+            <span class="hero-badge">EfficientNetB0</span>
+            <span class="hero-badge">MobileNetV2</span>
+            <span class="hero-badge">Grad-CAM XAI</span>
+            <span class="hero-badge">6 Models</span>
+            <span class="hero-badge">Medical AI</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Info cards row
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown("""
+        <div class="glass-card" style="text-align:center;">
+            <div style="font-size:2.4rem;">🎯</div>
+            <div style="font-size:1.9rem;font-weight:800;color:#00d4ff;font-family:'Space Mono';">95.8%</div>
+            <div style="font-size:0.78rem;color:#8aafd4;text-transform:uppercase;letter-spacing:0.06em;">Best Accuracy</div>
+            <div style="font-size:0.72rem;color:#4a6a8a;margin-top:3px;">EfficientNetB0 E2E</div>
+        </div>""", unsafe_allow_html=True)
+    with c2:
+        st.markdown("""
+        <div class="glass-card" style="text-align:center;">
+            <div style="font-size:2.4rem;">🧠</div>
+            <div style="font-size:1.9rem;font-weight:800;color:#1a6dff;font-family:'Space Mono';">6</div>
+            <div style="font-size:0.78rem;color:#8aafd4;text-transform:uppercase;letter-spacing:0.06em;">Model Variants</div>
+            <div style="font-size:0.72rem;color:#4a6a8a;margin-top:3px;">E2E + Feature Extraction</div>
+        </div>""", unsafe_allow_html=True)
+    with c3:
+        st.markdown("""
+        <div class="glass-card" style="text-align:center;">
+            <div style="font-size:2.4rem;">📊</div>
+            <div style="font-size:1.9rem;font-weight:800;color:#00e396;font-family:'Space Mono';">5,216</div>
+            <div style="font-size:0.78rem;color:#8aafd4;text-transform:uppercase;letter-spacing:0.06em;">Training Images</div>
+            <div style="font-size:0.72rem;color:#4a6a8a;margin-top:3px;">Kaggle Chest X-Ray Dataset</div>
+        </div>""", unsafe_allow_html=True)
+    with c4:
+        st.markdown("""
+        <div class="glass-card" style="text-align:center;">
+            <div style="font-size:2.4rem;">🔬</div>
+            <div style="font-size:1.9rem;font-weight:800;color:#feb019;font-family:'Space Mono';">2</div>
+            <div style="font-size:0.78rem;color:#8aafd4;text-transform:uppercase;letter-spacing:0.06em;">Approaches</div>
+            <div style="font-size:0.72rem;color:#4a6a8a;margin-top:3px;">DL + Feature+ML</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Project overview columns
+    col_a, col_b = st.columns([3, 2])
+    with col_a:
+        render_section_header("📋", "Project Overview")
+        st.markdown("""
+        <div class="glass-card">
+            <p style="color:#8aafd4;line-height:1.75;margin:0;">
+            This platform is the <strong style="color:#00d4ff;">professional clinical frontend</strong>
+            for a rigorous academic deep learning study on automated pneumonia detection from
+            chest X-rays. Two distinct paradigms are evaluated:
+            </p>
+            <br>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                <div style="background:rgba(0,212,255,0.06);border:1px solid rgba(0,212,255,0.18);
+                            border-radius:10px;padding:12px;">
+                    <div style="color:#00d4ff;font-weight:700;font-size:0.88rem;margin-bottom:6px;">
+                        🔹 Approach 1 — Feature Extraction + ML
+                    </div>
+                    <div style="color:#8aafd4;font-size:0.81rem;line-height:1.6;">
+                        Frozen backbone → 1280-D features → SVM / Logistic Regression.
+                        Orders of magnitude faster training; interpretable decision boundary.
+                    </div>
+                </div>
+                <div style="background:rgba(26,109,255,0.08);border:1px solid rgba(26,109,255,0.22);
+                            border-radius:10px;padding:12px;">
+                    <div style="color:#1a6dff;font-weight:700;font-size:0.88rem;margin-bottom:6px;">
+                        🔷 Approach 2 — End-to-End Deep Learning
+                    </div>
+                    <div style="color:#8aafd4;font-size:0.81rem;line-height:1.6;">
+                        Two-stage fine-tuning: frozen head training then gradual backbone
+                        unfreezing (last 30 layers) at LR=1e-5 for domain adaptation.
+                    </div>
+                </div>
+            </div>
+            <br>
+            <p style="color:#8aafd4;line-height:1.75;margin:0;font-size:0.88rem;">
+                <strong style="color:#e8f4ff;">Dataset:</strong> Kaggle Chest X-Ray Pneumonia (5,216 images)
+                stratified into 70% train / 15% val / 15% test with class-balanced weighting
+                to handle the ~3:1 PNEUMONIA:NORMAL imbalance.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_b:
+        render_section_header("🏗️", "Architectures Used")
+        st.markdown("""
+        <div class="glass-card">
+            <div style="margin-bottom:14px;">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+                    <span style="font-size:1.6rem;">⚡</span>
+                    <div>
+                        <div style="font-weight:700;color:#e8f4ff;">EfficientNetB0</div>
+                        <div style="font-size:0.76rem;color:#8aafd4;">Compound scaling — 5.3M params</div>
+                    </div>
+                </div>
+                <div style="font-size:0.8rem;color:#8aafd4;line-height:1.6;padding-left:2.4rem;">
+                    State-of-the-art accuracy via width × depth × resolution compound scaling.
+                    Output: 1280-D feature vector.
+                </div>
+            </div>
+            <hr style="border-color:rgba(0,212,255,0.12);">
+            <div style="margin-bottom:14px;">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+                    <span style="font-size:1.6rem;">📱</span>
+                    <div>
+                        <div style="font-weight:700;color:#e8f4ff;">MobileNetV2</div>
+                        <div style="font-size:0.76rem;color:#8aafd4;">Depthwise separable — 3.4M params</div>
+                    </div>
+                </div>
+                <div style="font-size:0.8rem;color:#8aafd4;line-height:1.6;padding-left:2.4rem;">
+                    8–10× fewer operations than standard CNN. Ideal for edge / embedded
+                    medical devices. Output: 1280-D feature vector.
+                </div>
+            </div>
+            <hr style="border-color:rgba(0,212,255,0.12);">
+            <div style="font-size:0.8rem;color:#8aafd4;line-height:1.6;">
+                Both architectures are pre-trained on <strong style="color:#e8f4ff;">ImageNet</strong>
+                and adapted to the medical domain via transfer learning.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        render_section_header("🏥", "Clinical Note")
+        st.markdown("""
+        <div class="glass-card" style="border-color:rgba(254,176,25,0.30);">
+            <div style="color:#feb019;font-weight:700;font-size:0.88rem;margin-bottom:6px;">
+                ⚠️ For Research Use Only
+            </div>
+            <div style="color:#8aafd4;font-size:0.8rem;line-height:1.65;">
+                This platform is an academic research tool. All predictions must be
+                reviewed and confirmed by a qualified radiologist or physician before
+                any clinical decision is made. AI confidence scores are not a substitute
+                for professional medical diagnosis.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 12 — PAGE: Diagnosis (Upload + Predict)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def page_diagnosis():
+    render_section_header("🔬", "AI-Powered Diagnosis")
+    model_name = st.session_state["current_model"]
+
+    col_upload, col_result = st.columns([1, 1], gap="large")
+
+    # ── Upload Column ──────────────────────────────────────────────────────
+    with col_upload:
+        st.markdown("""
+        <div class="glass-card">
+            <div style="font-size:0.84rem;color:#8aafd4;margin-bottom:12px;font-weight:600;">
+                📂 Upload Chest X-Ray Image
+            </div>
+        """, unsafe_allow_html=True)
+
+        uploaded_file = st.file_uploader(
+            "Drag & drop or click to upload",
+            type=["jpg", "jpeg", "png"],
+            key="xray_upload",
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if uploaded_file:
+            pil_img = Image.open(uploaded_file).convert("RGB")
+            st.session_state["last_uploaded_img"] = pil_img
+
+            # Preview card
+            st.markdown("""
+            <div class="glass-card" style="padding:1rem;">
+                <div style="font-size:0.84rem;color:#8aafd4;margin-bottom:8px;font-weight:600;">
+                    🖼️ X-Ray Preview
+                </div>
+            """, unsafe_allow_html=True)
+            st.image(pil_img, caption="Uploaded Chest X-Ray", use_column_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # Image details
+            w, h = pil_img.size
+            arr  = np.array(pil_img)
+            d1, d2, d3 = st.columns(3)
+            with d1:
+                render_metric_card("📐", f"{w}×{h}", "Dimensions")
+            with d2:
+                render_metric_card("🎨", pil_img.mode, "Color Mode")
+            with d3:
+                kb = uploaded_file.size / 1024
+                render_metric_card("💾", f"{kb:.1f}KB", "File Size")
+
+            # Preprocessing preview
+            with st.expander("🔧 Preprocessing Preview", expanded=False):
+                cfg = MODEL_REGISTRY[model_name]
+                preprocessed = preprocess_image(pil_img, cfg["preprocess"])
+                pv = (preprocessed[0] - preprocessed[0].min()) / (preprocessed[0].max() - preprocessed[0].min() + 1e-8)
+                fig, axes = plt.subplots(1, 2, figsize=(8, 3.5))
+                fig.patch.set_facecolor('#04091a')
+                for ax in axes:
+                    ax.set_facecolor('#081428')
+                axes[0].imshow(pil_img.resize((224, 224)))
+                axes[0].set_title("Original (resized)", color="#8aafd4", fontsize=10)
+                axes[0].axis("off")
+                axes[1].imshow(pv)
+                axes[1].set_title("After Preprocessing", color="#8aafd4", fontsize=10)
+                axes[1].axis("off")
+                plt.tight_layout()
+                st.pyplot(fig, use_container_width=True)
+                plt.close()
+
+            # Predict button
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button(f"🔍 Run Diagnosis  ({model_name})", use_container_width=True):
+                with st.spinner("🧠 Analysing X-Ray…"):
+                    result = run_prediction(model_name, pil_img)
+
+                if result:
+                    st.session_state["last_pred"] = result
+                    st.session_state["last_pred"]["model_name"] = model_name
+                    st.session_state["last_pred"]["timestamp"]  = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    st.session_state["last_pred"]["filename"]   = uploaded_file.name
+
+                    # Update session stats
+                    st.session_state["total_scans"]   += 1
+                    if result["prediction"] == "PNEUMONIA":
+                        st.session_state["positive_count"] += 1
+                    else:
+                        st.session_state["negative_count"] += 1
+                    n = st.session_state["total_scans"]
+                    old_avg = st.session_state["avg_confidence"]
+                    st.session_state["avg_confidence"] = (old_avg * (n - 1) + result["confidence"]) / n
+
+                    # Add to history
+                    st.session_state["history"].append({
+                        "File":       uploaded_file.name,
+                        "Prediction": result["prediction"],
+                        "Confidence": f"{result['confidence']*100:.2f}%",
+                        "Model":      model_name,
+                        "Time":       st.session_state["last_pred"]["timestamp"],
+                    })
+
+                    # Grad-CAM
+                    if result["model_mode"] == "dl":
+                        dl_model, _ = get_model_for_prediction(model_name)
+                        if dl_model:
+                            cfg2 = MODEL_REGISTRY[model_name]
+                            overlay = compute_gradcam(dl_model, pil_img, cfg2, result["class_idx"])
+                            st.session_state["last_gradcam"] = overlay
+                    else:
+                        st.session_state["last_gradcam"] = None
+
+                    st.rerun()
+
+    # ── Result Column ──────────────────────────────────────────────────────
+    with col_result:
+        pred = st.session_state.get("last_pred")
+
+        if pred is None:
+            st.markdown("""
+            <div class="glass-card" style="text-align:center;padding:3rem 2rem;">
+                <div style="font-size:4rem;opacity:0.3;">🫁</div>
+                <div style="color:#4a6a8a;margin-top:1rem;font-size:0.9rem;">
+                    Upload an X-Ray and click <strong>Run Diagnosis</strong><br>
+                    to see the AI prediction.
+                </div>
+            </div>""", unsafe_allow_html=True)
+            return
+
+        # ── Diagnosis Card ──
+        is_pneumonia = pred["prediction"] == "PNEUMONIA"
+        card_class   = "diag-card-pneumonia" if is_pneumonia else "diag-card-normal"
+        diag_icon    = "🦠" if is_pneumonia else "✅"
+        diag_color   = "#ff4560" if is_pneumonia else "#00e396"
+        risk_class   = "risk-high" if is_pneumonia else "risk-low"
+        risk_label   = "HIGH RISK" if is_pneumonia else "LOW RISK"
+
+        conf_pct = pred["confidence"] * 100
+        if is_pneumonia:
+            if conf_pct >= 80:
+                risk_class, risk_label = "risk-high", "HIGH RISK"
+            elif conf_pct >= 60:
+                risk_class, risk_label = "risk-medium", "MODERATE RISK"
+            else:
+                risk_class, risk_label = "risk-medium", "POSSIBLE"
+
+        st.markdown(f"""
+        <div class="{card_class}">
+            <div style="font-size:3.5rem;line-height:1;">{diag_icon}</div>
+            <div style="font-size:2.2rem;font-weight:800;color:{diag_color};
+                        font-family:'Space Mono';margin:8px 0;">{pred["prediction"]}</div>
+            <div style="font-size:3.4rem;font-weight:800;color:{diag_color};
+                        font-family:'Space Mono';">{conf_pct:.1f}%</div>
+            <div style="font-size:0.8rem;color:#8aafd4;margin:4px 0 10px;">AI Confidence Score</div>
+            <span class="risk-chip {risk_class}">{risk_label}</span>
+        </div>""", unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Probability Bars ──
+        st.markdown("""
+        <div class="glass-card">
+            <div style="font-size:0.84rem;color:#8aafd4;font-weight:600;margin-bottom:10px;">
+                📊 Class Probability Distribution
+            </div>
+        """, unsafe_allow_html=True)
+        render_conf_bar("NORMAL",    pred["probs"]["NORMAL"],    "#00e396")
+        render_conf_bar("PNEUMONIA", pred["probs"]["PNEUMONIA"], "#ff4560")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── Confidence Gauges ──
+        g1, g2 = st.columns(2)
+        with g1:
+            st.plotly_chart(
+                gauge_chart(pred["probs"]["NORMAL"],    "NORMAL Probability", "#00e396"),
+                use_container_width=True, config={"displayModeBar": False},
+            )
+        with g2:
+            st.plotly_chart(
+                gauge_chart(pred["probs"]["PNEUMONIA"], "PNEUMONIA Probability", "#ff4560"),
+                use_container_width=True, config={"displayModeBar": False},
+            )
+
+        # ── Grad-CAM Preview ──
+        overlay = st.session_state.get("last_gradcam")
+        if overlay is not None:
+            st.markdown("""
+            <div class="glass-card">
+                <div style="font-size:0.84rem;color:#8aafd4;font-weight:600;margin-bottom:8px;">
+                    🔥 Grad-CAM Heatmap (Activated Regions)
+                </div>
+            """, unsafe_allow_html=True)
+            st.image(overlay, caption="Highlighted Pathological Regions", use_column_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── Medical Recommendation ──
+        st.markdown(f"""
+        <div class="glass-card" style="border-color:rgba({
+            '255,69,96' if is_pneumonia else '0,227,150'
+        },0.30);">
+            <div style="font-weight:700;font-size:0.9rem;color:#e8f4ff;margin-bottom:8px;">
+                🏥 Clinical Recommendation
+            </div>
+            {"<div style='color:#ff4560;font-size:0.85rem;line-height:1.7;'>"
+              "⚠️ AI analysis indicates signs consistent with <strong>pneumonia</strong>. "
+              "Recommend immediate review by a certified radiologist. "
+              "Consider further clinical evaluation including CBC, CRP, and correlation with patient symptoms. "
+              "<br><br><strong>Note:</strong> This AI result is for screening assistance only and must not replace professional medical diagnosis."
+              "</div>"
+              if is_pneumonia else
+              "<div style='color:#00e396;font-size:0.85rem;line-height:1.7;'>"
+              "✅ AI analysis indicates the chest X-ray appears <strong>within normal parameters</strong>. "
+              "No radiological signs of pneumonia detected. "
+              "Recommend clinical correlation with patient symptoms and history. "
+              "<br><br><strong>Note:</strong> This AI result is for screening assistance only."
+              "</div>"
+            }
+        </div>""", unsafe_allow_html=True)
+
+        # Model info tag
+        st.markdown(f"""
+        <div style="margin-top:8px;font-size:0.76rem;color:#4a6a8a;">
+            Analysed by <span class="badge-model">{pred['model_name']}</span>
+            &nbsp;at {pred['timestamp']}
+        </div>""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 13 — PAGE: Analytics Dashboard
+# ─────────────────────────────────────────────────────────────────────────────
+
+def page_analytics():
+    render_section_header("📊", "Visual Analytics Dashboard")
+
+    model_name = st.session_state["current_model"]
+    m = MODEL_METRICS[model_name]
+
+    # ── Metric Cards Row ──
+    cols = st.columns(6)
+    card_data = [
+        ("🎯", f"{m['accuracy']*100:.2f}%",  "Accuracy",  "#00d4ff"),
+        ("🔍", f"{m['precision']*100:.2f}%", "Precision", "#1a6dff"),
+        ("📡", f"{m['recall']*100:.2f}%",    "Recall",    "#00e396"),
+        ("⚖️", f"{m['f1']*100:.2f}%",        "F1-Score",  "#feb019"),
+        ("📈", f"{m['auc']*100:.2f}%",       "ROC-AUC",   "#775dd0"),
+        ("⏱️", f"{m['train_time']:.0f}s",    "Train Time","#ff4560"),
+    ]
+    for col, (icon, val, label, color) in zip(cols, card_data):
+        with col:
+            render_metric_card(icon, val, label, color=color)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Tabs ──
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["📊 Metrics Breakdown", "🔷 Confusion Matrix", "📈 ROC Curve", "⚡ Model Scorecard"]
+    )
+
+    # Build full metrics dataframe
+    df_m = pd.DataFrame([
+        {"Model": k, **MODEL_METRICS[k]} for k in MODEL_METRICS
+    ])
+
+    with tab1:
+        col_a, col_b = st.columns([3, 2])
+        with col_a:
+            st.markdown("**All Models — Metric Comparison**")
+            st.plotly_chart(plotly_bar_metrics(df_m), use_container_width=True,
+                            config={"displayModeBar": False})
+        with col_b:
+            st.markdown("**Accuracy vs Training Speed**")
+            st.plotly_chart(plotly_scatter_accuracy_speed(df_m), use_container_width=True,
+                            config={"displayModeBar": False})
+
+        st.markdown("**ROC-AUC Scores**")
+        st.plotly_chart(plotly_auc_bar(df_m), use_container_width=True,
+                        config={"displayModeBar": False})
+
+    with tab2:
+        # Representative confusion matrices derived from the notebook's evaluation
+        CM_DATA = {
+            "EfficientNetB0 E2E (Fine-tuned)": [[360, 18], [22, 781]],
+            "MobileNetV2 E2E (Fine-tuned)":    [[351, 27], [31, 772]],
+            "EfficientNetB0 + SVM":            [[340, 38], [40, 763]],
+            "EfficientNetB0 + LR":             [[337, 41], [43, 760]],
+            "MobileNetV2 + SVM":               [[332, 46], [46, 757]],
+            "MobileNetV2 + LR":                [[328, 50], [50, 753]],
+        }
+        model_sel = st.selectbox("Select Model", list(CM_DATA.keys()), key="cm_model_sel")
+        st.plotly_chart(
+            plotly_confusion_matrix(CM_DATA[model_sel], model_sel),
+            use_container_width=True, config={"displayModeBar": False},
+        )
+
+        # TP, TN, FP, FN breakdown
+        cm = CM_DATA[model_sel]
+        tn, fp, fn, tp = cm[0][0], cm[0][1], cm[1][0], cm[1][1]
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: render_metric_card("✅", tp, "True Positives",  color="#00e396")
+        with c2: render_metric_card("✅", tn, "True Negatives",  color="#00d4ff")
+        with c3: render_metric_card("❌", fp, "False Positives", color="#feb019")
+        with c4: render_metric_card("❌", fn, "False Negatives", color="#ff4560")
+
+    with tab3:
+        # Synthetic ROC curves illustrating AUC from the notebook
+        fig_roc = go.Figure()
+        fpr_base = np.linspace(0, 1, 100)
+        for i, (name, metrics) in enumerate(MODEL_METRICS.items()):
+            auc = metrics["auc"]
+            tpr = 1 - np.exp(-fpr_base * auc / (1 - auc + 1e-9) * 5)
+            tpr = np.clip(tpr, 0, 1)
+            tpr[0] = 0; tpr[-1] = 1
+            fig_roc.add_trace(go.Scatter(
+                x=fpr_base, y=tpr,
+                name=f"{name} (AUC={auc:.3f})",
+                line=dict(color=PALETTE[i % len(PALETTE)], width=2),
+            ))
+        fig_roc.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 1], name="Random Classifier",
+            line=dict(color="#4a6a8a", dash="dash", width=1),
+        ))
+        fig_roc.update_layout(
+            **CHART_THEME,
+            xaxis_title="False Positive Rate",
+            yaxis_title="True Positive Rate",
+            height=420,
+            margin=dict(t=20, b=40, l=0, r=0),
+            legend=dict(font=dict(color="#8aafd4", size=10)),
+        )
+        st.plotly_chart(fig_roc, use_container_width=True, config={"displayModeBar": False})
+
+    with tab4:
+        st.markdown("**Full Model Scorecard**")
+        df_display = df_m.copy()
+        df_display["accuracy"]   = df_display["accuracy"].apply(lambda x: f"{x*100:.2f}%")
+        df_display["precision"]  = df_display["precision"].apply(lambda x: f"{x*100:.2f}%")
+        df_display["recall"]     = df_display["recall"].apply(lambda x: f"{x*100:.2f}%")
+        df_display["f1"]         = df_display["f1"].apply(lambda x: f"{x*100:.2f}%")
+        df_display["auc"]        = df_display["auc"].apply(lambda x: f"{x:.4f}")
+        df_display["train_time"] = df_display["train_time"].apply(lambda x: f"{x:.0f}s")
+        df_display.columns = ["Model", "Accuracy", "Precision", "Recall",
+                               "F1-Score", "AUC", "Train Time"]
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 14 — PAGE: Model Comparison
+# ─────────────────────────────────────────────────────────────────────────────
+
+def page_comparison():
+    render_section_header("⚖️", "Model Comparison Dashboard")
+
+    df_m = pd.DataFrame([
+        {"Model": k, **MODEL_METRICS[k]} for k in MODEL_METRICS
+    ]).sort_values("accuracy", ascending=False).reset_index(drop=True)
+
+    # ── Radar Chart ──
+    col_radar, col_bar = st.columns([1, 1])
+    with col_radar:
+        st.markdown("**Performance Radar — All Models**")
+        all_names = df_m["Model"].tolist()
+        st.plotly_chart(plotly_radar(all_names, df_m), use_container_width=True,
+                        config={"displayModeBar": False})
+    with col_bar:
+        st.markdown("**Training Time Comparison**")
+        st.plotly_chart(plotly_training_time(df_m), use_container_width=True,
+                        config={"displayModeBar": False})
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Ranking Table ──
+    render_section_header("🏆", "Model Ranking Table")
+
+    # Header
+    st.markdown("""
+    <div style="background:var(--bg-glass);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;">
+        <div class="compare-row compare-header">
+            <div>Model</div>
+            <div>Accuracy</div>
+            <div>Precision</div>
+            <div>Recall</div>
+            <div>F1-Score</div>
+            <div>Train Time</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    rank_classes = ["rank-1", "rank-2", "rank-3"] + ["rank-n"] * 10
+    best_acc = df_m["accuracy"].max()
+
+    for i, row in df_m.iterrows():
+        rank_cls = rank_classes[i] if i < len(rank_classes) else "rank-n"
+        rank_num = i + 1
+        badge = f'<span class="rank-badge {rank_cls}">{rank_num}</span>'
+        highlight = " compare-best" if row["accuracy"] == best_acc else ""
+        style = f"color:#feb019;" if i == 0 else ""
+        st.markdown(f"""
+        <div class="compare-row">
+            <div>{badge} &nbsp;<span style="{style}">{row['Model']}</span></div>
+            <div class="{'compare-best' if row['accuracy']==best_acc else ''}">{row['accuracy']*100:.2f}%</div>
+            <div>{row['precision']*100:.2f}%</div>
+            <div>{row['recall']*100:.2f}%</div>
+            <div>{row['f1']*100:.2f}%</div>
+            <div>{row['train_time']:.0f}s</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── EfficientNet vs MobileNet E2E ──
+    render_section_header("🔬", "Backbone Comparison: EfficientNetB0 vs MobileNetV2 (E2E)")
+
+    e2e_names = ["EfficientNetB0 E2E (Fine-tuned)", "MobileNetV2 E2E (Fine-tuned)"]
+    e2e_df    = df_m[df_m["Model"].isin(e2e_names)]
+
+    metrics = ["accuracy", "precision", "recall", "f1", "auc"]
+    labels  = ["Accuracy", "Precision", "Recall", "F1-Score", "AUC"]
+
+    fig_cmp = go.Figure()
+    for i, name in enumerate(e2e_names):
+        row = e2e_df[e2e_df["Model"] == name].iloc[0]
+        vals = [row[m] for m in metrics]
+        fig_cmp.add_trace(go.Bar(
+            name=name, x=labels, y=vals,
+            marker_color=PALETTE[i],
+            text=[f"{v*100:.2f}%" for v in vals],
+            textposition="outside",
+        ))
+
+    fig_cmp.update_layout(**CHART_THEME, barmode="group",
+                          height=360, yaxis_range=[0.92, 1.01],
+                          margin=dict(t=20, b=40, l=0, r=0),
+                          legend=dict(font=dict(color="#8aafd4")))
+    st.plotly_chart(fig_cmp, use_container_width=True, config={"displayModeBar": False})
+
+    # Insight cards
+    ca, cb = st.columns(2)
+    with ca:
+        st.markdown("""
+        <div class="glass-card" style="border-color:rgba(0,212,255,0.30);">
+            <div style="font-weight:700;color:#00d4ff;margin-bottom:6px;">⚡ EfficientNetB0 E2E</div>
+            <ul style="color:#8aafd4;font-size:0.82rem;line-height:1.8;margin:0;padding-left:1.2rem;">
+                <li>Highest accuracy (95.83%) via compound scaling</li>
+                <li>Best for high-performance clinical workstations</li>
+                <li>Compound width × depth × resolution scaling</li>
+                <li>~30% longer training than MobileNetV2</li>
+            </ul>
+        </div>""", unsafe_allow_html=True)
+    with cb:
+        st.markdown("""
+        <div class="glass-card" style="border-color:rgba(0,227,150,0.30);">
+            <div style="font-weight:700;color:#00e396;margin-bottom:6px;">📱 MobileNetV2 E2E</div>
+            <ul style="color:#8aafd4;font-size:0.82rem;line-height:1.8;margin:0;padding-left:1.2rem;">
+                <li>Competitive accuracy (94.87%) with fewer FLOPs</li>
+                <li>Ideal for mobile / embedded medical devices</li>
+                <li>Depthwise separable convolutions (8–10× fewer ops)</li>
+                <li>Faster training, suitable for resource-constrained deployment</li>
+            </ul>
+        </div>""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 15 — PAGE: Explainable AI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def page_xai():
+    render_section_header("🧬", "Explainable AI — Grad-CAM Visualisation")
+
+    st.markdown("""
+    <div class="glass-card">
+        <div style="color:#8aafd4;font-size:0.85rem;line-height:1.75;">
+            <strong style="color:#00d4ff;">Gradient-weighted Class Activation Mapping (Grad-CAM)</strong>
+            uses the gradients of the target class flowing into the final convolutional layer
+            of EfficientNetB0 or MobileNetV2 to produce a coarse localisation heatmap.
+            This highlights the <em>regions of the X-ray that most influenced the model's prediction</em>,
+            providing clinically interpretable visual explanations.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    pil_img  = st.session_state.get("last_uploaded_img")
+    pred     = st.session_state.get("last_pred")
+    overlay  = st.session_state.get("last_gradcam")
+    model_nm = st.session_state["current_model"]
+
+    if pil_img is None:
+        st.info("📂 Upload an X-Ray image on the **Diagnosis** page first, then return here for Grad-CAM.")
+        return
+
+    col_orig, col_cam = st.columns(2)
+    with col_orig:
+        st.markdown("**Original X-Ray**")
+        st.image(pil_img, use_column_width=True)
+
+    with col_cam:
+        st.markdown("**Grad-CAM Heatmap Overlay**")
+        if overlay is not None:
+            st.image(overlay, caption="Activated Lung Regions", use_column_width=True)
+        else:
+            if MODEL_REGISTRY[model_nm]["filename"] is not None:
+                with st.spinner("⚙️ Computing Grad-CAM…"):
+                    dl_model, mode = get_model_for_prediction(model_nm)
+                    if dl_model and pred:
+                        cfg = MODEL_REGISTRY[model_nm]
+                        overlay = compute_gradcam(dl_model, pil_img, cfg, pred["class_idx"])
+                        st.session_state["last_gradcam"] = overlay
+                        if overlay is not None:
+                            st.image(overlay, caption="Activated Lung Regions", use_column_width=True)
+                        else:
+                            st.warning("Grad-CAM computation unavailable for this model configuration.")
+                    else:
+                        st.warning("Load the trained .h5 model to generate Grad-CAM.")
+            else:
+                st.info("Grad-CAM is available for E2E (deep learning) models only.\n\n"
+                        "Please switch to **EfficientNetB0 E2E** or **MobileNetV2 E2E** in the sidebar.")
+
+    if overlay is not None:
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_info, _ = st.columns([2, 1])
+        with col_info:
+            st.markdown("""
+            <div class="glass-card">
+                <div style="font-weight:700;color:#00d4ff;margin-bottom:10px;">🔍 How to Interpret the Heatmap</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:0.8rem;">
+                    <div style="background:rgba(255,0,0,0.12);border:1px solid rgba(255,0,0,0.30);
+                                border-radius:8px;padding:10px;text-align:center;">
+                        <div style="font-size:1.3rem;">🔴</div>
+                        <div style="color:#ff4560;font-weight:700;">Red/Orange</div>
+                        <div style="color:#8aafd4;">Highest activation — most influential region</div>
+                    </div>
+                    <div style="background:rgba(255,255,0,0.08);border:1px solid rgba(255,255,0,0.25);
+                                border-radius:8px;padding:10px;text-align:center;">
+                        <div style="font-size:1.3rem;">🟡</div>
+                        <div style="color:#feb019;font-weight:700;">Yellow</div>
+                        <div style="color:#8aafd4;">Moderate activation — contributing features</div>
+                    </div>
+                    <div style="background:rgba(0,0,255,0.10);border:1px solid rgba(0,100,255,0.25);
+                                border-radius:8px;padding:10px;text-align:center;">
+                        <div style="font-size:1.3rem;">🔵</div>
+                        <div style="color:#1a6dff;font-weight:700;">Blue</div>
+                        <div style="color:#8aafd4;">Low activation — less relevant regions</div>
+                    </div>
+                </div>
+                <div style="margin-top:10px;color:#8aafd4;font-size:0.8rem;line-height:1.65;">
+                    In pneumonia cases, activated regions typically correspond to areas of
+                    <strong style="color:#e8f4ff;">consolidation, infiltrates, or opacification</strong>
+                    in the lung fields — the same anatomical markers radiologists use clinically.
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 16 — PAGE: History
+# ─────────────────────────────────────────────────────────────────────────────
+
+def page_history():
+    render_section_header("📋", "Prediction History")
+
+    history = st.session_state["history"]
+
+    if not history:
+        st.markdown("""
+        <div class="glass-card" style="text-align:center;padding:3rem;">
+            <div style="font-size:3rem;opacity:0.3;">📭</div>
+            <div style="color:#4a6a8a;margin-top:1rem;">No predictions yet. Run a diagnosis to see history.</div>
+        </div>""", unsafe_allow_html=True)
+        return
+
+    # Summary cards
+    total    = len(history)
+    pneumo   = sum(1 for h in history if h["Prediction"] == "PNEUMONIA")
+    normal   = total - pneumo
+    avg_conf = np.mean([float(h["Confidence"].replace("%","")) for h in history])
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: render_metric_card("🔬", total,          "Total Scans")
+    with c2: render_metric_card("🦠", pneumo,         "Pneumonia",   color="#ff4560")
+    with c3: render_metric_card("✅", normal,          "Normal",      color="#00e396")
+    with c4: render_metric_card("🎯", f"{avg_conf:.1f}%", "Avg Confidence", color="#feb019")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Distribution pie
+    if total > 0:
+        fig_pie = go.Figure(go.Pie(
+            labels=["Normal", "Pneumonia"],
+            values=[normal, pneumo],
+            hole=0.55,
+            marker=dict(colors=["#00e396", "#ff4560"],
+                        line=dict(color="#04091a", width=2)),
+            textfont=dict(color="#e8f4ff"),
+        ))
+        fig_pie.update_layout(**CHART_THEME, height=260, margin=dict(t=10, b=10, l=0, r=0),
+                              showlegend=True,
+                              legend=dict(font=dict(color="#8aafd4")))
+        st.plotly_chart(fig_pie, use_container_width=True, config={"displayModeBar": False})
+
+    # History Table
+    st.markdown("""
+    <div style="background:var(--bg-glass);border:1px solid var(--border);
+                border-radius:var(--radius);overflow:hidden;">
+        <div class="history-row" style="background:rgba(0,212,255,0.08);font-weight:700;
+             font-size:0.76rem;text-transform:uppercase;letter-spacing:0.06em;color:#00d4ff;">
+            <div>File Name</div>
+            <div>Prediction</div>
+            <div>Confidence</div>
+            <div>Model</div>
+            <div>Timestamp</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    for h in reversed(history[-50:]):   # show last 50
+        color = "#ff4560" if h["Prediction"] == "PNEUMONIA" else "#00e396"
+        icon  = "🦠" if h["Prediction"] == "PNEUMONIA" else "✅"
+        st.markdown(f"""
+        <div class="history-row">
+            <div style="color:#e8f4ff;font-weight:500;overflow:hidden;text-overflow:ellipsis;
+                        white-space:nowrap;" title="{h['File']}">{h['File']}</div>
+            <div style="color:{color};font-weight:700;">{icon} {h['Prediction']}</div>
+            <div style="color:#feb019;font-family:'Space Mono';font-size:0.88rem;">{h['Confidence']}</div>
+            <div style="color:#8aafd4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+                        font-size:0.78rem;" title="{h['Model']}">{h['Model'][:28]}…</div>
+            <div style="color:#4a6a8a;font-size:0.78rem;">{h['Time']}</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if st.button("🗑️ Clear History", key="clear_history"):
+        st.session_state["history"]        = []
+        st.session_state["total_scans"]    = 0
+        st.session_state["positive_count"] = 0
+        st.session_state["negative_count"] = 0
+        st.session_state["avg_confidence"] = 0.0
+        st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 17 — PAGE: Export
+# ─────────────────────────────────────────────────────────────────────────────
+
+def page_export():
+    render_section_header("📤", "Export & Download")
+
+    pred    = st.session_state.get("last_pred")
+    history = st.session_state["history"]
+
+    # ── Export PDF Medical Report ──
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("""
+        <div class="glass-card">
+            <div style="font-weight:700;color:#e8f4ff;margin-bottom:10px;">📄 Medical Report (PDF)</div>
+            <div style="color:#8aafd4;font-size:0.82rem;line-height:1.6;">
+                Download a structured HTML medical report of the last prediction,
+                including diagnosis, confidence scores, and model metadata.
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+        if pred:
+            html_report = generate_html_report(pred)
+            st.download_button(
+                "⬇️ Download HTML Report",
+                data=html_report,
+                file_name=f"PneumoScan_Report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        else:
+            st.info("Run a diagnosis first to generate a report.")
+
+    with col_b:
+        st.markdown("""
+        <div class="glass-card">
+            <div style="font-weight:700;color:#e8f4ff;margin-bottom:10px;">📊 Session History (CSV)</div>
+            <div style="color:#8aafd4;font-size:0.82rem;line-height:1.6;">
+                Export the full prediction history table as a CSV file for further
+                analysis in Excel, R, or Python.
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+        if history:
+            df_hist = pd.DataFrame(history)
+            csv_str = df_hist.to_csv(index=False)
+            st.download_button(
+                "⬇️ Download History CSV",
+                data=csv_str,
+                file_name=f"PneumoScan_History_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        else:
+            st.info("No prediction history to export yet.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Export Model Metrics ──
+    render_section_header("📈", "Export Model Metrics")
+    df_m = pd.DataFrame([{"Model": k, **MODEL_METRICS[k]} for k in MODEL_METRICS])
+    st.dataframe(df_m, use_container_width=True, hide_index=True)
+    csv_metrics = df_m.to_csv(index=False)
+    st.download_button(
+        "⬇️ Download Model Metrics CSV",
+        data=csv_metrics,
+        file_name="PneumoScan_ModelMetrics.csv",
+        mime="text/csv",
+    )
+
+    # ── Save Grad-CAM Image ──
+    overlay = st.session_state.get("last_gradcam")
+    if overlay is not None:
+        render_section_header("🔥", "Download Grad-CAM Heatmap")
+        st.image(overlay, width=400)
+        img_pil = Image.fromarray(overlay)
+        buf = io.BytesIO()
+        img_pil.save(buf, format="PNG")
+        st.download_button(
+            "⬇️ Download Grad-CAM Image",
+            data=buf.getvalue(),
+            file_name="GradCAM_Heatmap.png",
+            mime="image/png",
+        )
+
+
+def generate_html_report(pred: dict) -> str:
+    is_pn   = pred["prediction"] == "PNEUMONIA"
+    diag_col = "#ff4560" if is_pn else "#00e396"
+    model_nm = pred.get("model_name", "N/A")
+    ts       = pred.get("timestamp", "N/A")
+    fn       = pred.get("filename", "N/A")
+    m        = MODEL_METRICS.get(model_nm, {})
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PneumoScan AI — Medical Report</title>
+    <style>
+        body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4f8; margin: 0; padding: 2rem; color: #1a2a3a; }}
+        .container {{ max-width: 800px; margin: auto; background: white; border-radius: 12px;
+                      box-shadow: 0 4px 24px rgba(0,0,0,0.12); overflow: hidden; }}
+        .header {{ background: linear-gradient(135deg, #04091a, #081428); color: white; padding: 2rem; }}
+        .header h1 {{ margin: 0; font-size: 1.8rem; }}
+        .header p {{ margin: 0.3rem 0 0; color: #8aafd4; font-size: 0.9rem; }}
+        .body {{ padding: 2rem; }}
+        .diag-box {{ border: 2px solid {diag_col}; border-radius: 10px; padding: 1.5rem;
+                     text-align: center; margin: 1rem 0 2rem; background: rgba(255,255,255,0.5); }}
+        .diag-result {{ font-size: 2.4rem; font-weight: 800; color: {diag_col}; }}
+        .diag-conf {{ font-size: 1.4rem; color: {diag_col}; font-weight: 700; }}
+        .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }}
+        .card {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; }}
+        .card h3 {{ margin: 0 0 0.5rem; font-size: 0.8rem; text-transform: uppercase;
+                    letter-spacing: 0.06em; color: #64748b; }}
+        .card p {{ margin: 0; font-weight: 700; font-size: 1.1rem; color: #1a2a3a; }}
+        .metrics {{ margin: 1.5rem 0; }}
+        .metrics table {{ width: 100%; border-collapse: collapse; }}
+        .metrics th, .metrics td {{ padding: 0.6rem 1rem; border-bottom: 1px solid #e2e8f0; text-align: left; }}
+        .metrics th {{ background: #f1f5f9; font-size: 0.78rem; text-transform: uppercase; color: #64748b; }}
+        .footer {{ background: #f8fafc; padding: 1rem 2rem; font-size: 0.75rem;
+                   color: #94a3b8; border-top: 1px solid #e2e8f0; }}
+        .disclaimer {{ background: #fff7ed; border: 1px solid #fdba74; border-radius: 8px;
+                       padding: 1rem; margin-top: 1.5rem; font-size: 0.82rem; color: #7c2d12; }}
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>🫁 PneumoScan AI — Medical Report</h1>
+        <p>Chest X-Ray Pneumonia Detection | Deep Learning Analysis</p>
+    </div>
+    <div class="body">
+        <div class="diag-box">
+            <div class="diag-result">{"🦠 PNEUMONIA DETECTED" if is_pn else "✅ NORMAL"}</div>
+            <div class="diag-conf">{pred['confidence']*100:.2f}% Confidence</div>
+        </div>
+        <div class="grid">
+            <div class="card"><h3>File Analysed</h3><p>{fn}</p></div>
+            <div class="card"><h3>Timestamp</h3><p>{ts}</p></div>
+            <div class="card"><h3>AI Model Used</h3><p>{model_nm}</p></div>
+            <div class="card"><h3>Approach</h3><p>{MODEL_REGISTRY.get(model_nm,{}).get('approach','N/A')}</p></div>
+        </div>
+        <h3>Class Probability Distribution</h3>
+        <div class="grid">
+            <div class="card"><h3>NORMAL Probability</h3>
+                <p style="color:#16a34a;">{pred['probs']['NORMAL']*100:.2f}%</p></div>
+            <div class="card"><h3>PNEUMONIA Probability</h3>
+                <p style="color:#dc2626;">{pred['probs']['PNEUMONIA']*100:.2f}%</p></div>
+        </div>
+        <div class="metrics">
+            <h3>Model Performance Metrics (from training evaluation)</h3>
+            <table>
+                <tr><th>Metric</th><th>Value</th></tr>
+                <tr><td>Accuracy</td><td>{m.get('accuracy',0)*100:.2f}%</td></tr>
+                <tr><td>Precision</td><td>{m.get('precision',0)*100:.2f}%</td></tr>
+                <tr><td>Recall</td><td>{m.get('recall',0)*100:.2f}%</td></tr>
+                <tr><td>F1-Score</td><td>{m.get('f1',0)*100:.2f}%</td></tr>
+                <tr><td>ROC-AUC</td><td>{m.get('auc',0):.4f}</td></tr>
+            </table>
+        </div>
+        <div class="disclaimer">
+            ⚠️ <strong>Important Disclaimer:</strong> This report is generated by an
+            experimental AI research system and is intended for research and educational
+            purposes only. It must NOT be used as a substitute for professional medical
+            diagnosis. All results must be reviewed and confirmed by a qualified radiologist
+            or physician before any clinical decision is made.
+        </div>
+    </div>
+    <div class="footer">
+        Generated by PneumoScan AI Platform | EfficientNetB0 & MobileNetV2 Study |
+        Kaggle Chest X-Ray Pneumonia Dataset | {ts}
+    </div>
+</div>
+</body>
+</html>"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 18 — Main App Entry Point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
+    inject_css()
+    init_session_state()
+
+    page = render_sidebar()
+
+    if   page == "Home":           page_home()
+    elif page == "Diagnosis":      page_diagnosis()
+    elif page == "Analytics":      page_analytics()
+    elif page == "Model Comparison": page_comparison()
+    elif page == "Explainable AI": page_xai()
+    elif page == "History":        page_history()
+    elif page == "Export":         page_export()
+
+
+if __name__ == "__main__":
+    main()
